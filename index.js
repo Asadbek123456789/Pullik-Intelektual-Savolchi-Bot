@@ -2,44 +2,56 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const express = require('express');
 
-// 1. Sozlamalar
+// --- SOZLAMALAR ---
 const token = '8705116857:AAGppWc6OqJIz-zPrYqV0XaUXby8f8vbUVU';
-const MY_ID = 8142538424; // Siz bergan ID o'rnatildi
+const MY_ID = 8142538424; 
 const DB_FILE = 'users.json';
 
-const bot = new TelegramBot(token, { polling: true });
+// Botni sozlash (Takroriy xabarlarni oldini olish uchun dropPendingUpdates qo'shildi)
+const bot = new TelegramBot(token, { 
+    polling: { 
+        params: { 
+            drop_pending_updates: true 
+        } 
+    } 
+});
+
 const app = express();
 
-// 2. Ma'lumotlar bazasi bilan ishlash
+// --- MA'LUMOTLAR BAZASI ---
 let users = {};
-if (fs.existsSync(DB_FILE)) {
-    try {
-        users = JSON.parse(fs.readFileSync(DB_FILE));
-    } catch (e) {
-        users = {};
+function loadDB() {
+    if (fs.existsSync(DB_FILE)) {
+        try {
+            const data = fs.readFileSync(DB_FILE);
+            users = JSON.parse(data);
+        } catch (e) {
+            users = {};
+        }
     }
 }
+loadDB();
 
 function saveDB() {
     fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
 }
 
-// 3. Savollar bazasi (Takomillashtirilgan)
+// --- SAVOLLAR ---
 const questions = [
-    { question: "Real Madrid safida eng ko'p Oltin to'p olgan Kaka nechanchi yili bu mukofotga ega chiqqan?", options: ["2005", "2007", "2009"], answer: "2007" },
-    { question: "JavaScript-da o'zgarmas qiymat qaysi kalit so'z bilan e'lon qilinadi?", options: ["var", "let", "const"], answer: "const" },
-    { question: "Telegram bot yaratishda eng mashhur Node.js kutubxonasi qaysi?", options: ["telegraf", "node-telegram-bot-api", "express"], answer: "node-telegram-bot-api" },
-    { question: "Kaka 'Milan'dan 'Real Madrid'ga necha million yevro evaziga o'tgan?", options: ["65 mln", "94 mln", "80 mln"], answer: "65 mln" }
+    { question: "Real Madrid afsonasi Kaka nechanchi yili Oltin to'pni olgan?", options: ["2005", "2007", "2009"], answer: "2007" },
+    { question: "Web dasturlashda 'HTML' nima?", options: ["Dasturlash tili", "Belgilash tili", "Baza turi"], answer: "Belgilash tili" },
+    { question: "1 kilobayt necha baytga teng?", options: ["1000", "1024", "2048"], answer: "1024" },
+    { question: "Kaka qaysi davlat terma jamoasida o'ynagan?", options: ["Italiya", "Braziliya", "Ispaniya"], answer: "Braziliya" }
 ];
 
-// 4. Bot funksiyalari
+// --- FUNKSIYALAR ---
 function initUser(chatId, username) {
     if (!users[chatId]) {
         users[chatId] = {
             username: username || 'yoq',
             balance: 0,
             questionIndex: 0,
-            referrals: 0,
+            lastBonus: 0,
             wallet: null,
             waitingWallet: false
         };
@@ -47,18 +59,17 @@ function initUser(chatId, username) {
     }
 }
 
+// --- BUYRUQLAR ---
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     initUser(chatId, msg.from.username);
     
-    // Adminga bildirishnoma
-    if (chatId !== MY_ID) {
-        bot.sendMessage(MY_ID, `🆕 Yangi foydalanuvchi: @${msg.from.username}\nID: ${chatId}`);
-    }
-
-    bot.sendMessage(chatId, "👋 Xush kelibsiz! Savollarga javob berib pul ishlang.", {
+    bot.sendMessage(chatId, "👋 Hush kelibsiz! Savollarga javob bering va bonuslar oling.", {
         reply_markup: {
-            keyboard: [["🧠 Savollarni boshlash"], ["👤 Hisobim", "📨 Taklif qilish"]],
+            keyboard: [
+                ["🧠 Savollarni boshlash"],
+                ["👤 Hisobim", "🎁 Kunlik Bonus"]
+            ],
             resize_keyboard: true
         }
     });
@@ -72,39 +83,56 @@ bot.on("message", (msg) => {
     initUser(chatId, msg.from.username);
     const user = users[chatId];
 
+    // Karta raqamini kutish
     if (user.waitingWallet) {
         if (/^\d{16}$/.test(text)) {
             user.wallet = text;
             user.waitingWallet = false;
             saveDB();
-            return bot.sendMessage(chatId, "✅ Karta raqamingiz saqlandi!");
+            return bot.sendMessage(chatId, "✅ Karta raqamingiz muvaffaqiyatli saqlandi.");
         } else {
-            return bot.sendMessage(chatId, "❌ Xato! 16 xonali raqam kiriting.");
+            return bot.sendMessage(chatId, "❌ Xato! Faqat 16 ta raqamdan iborat karta raqamini yozing.");
         }
     }
 
     if (text === "🧠 Savollarni boshlash") {
         sendQuestion(chatId);
     } else if (text === "👤 Hisobim") {
-        bot.sendMessage(chatId, `💰 Balans: ${user.balance} so'm\n💳 Karta: ${user.wallet || "Yo'q"}`, {
+        bot.sendMessage(chatId, `👤 **Sizning balansingiz:**\n\n💰 Pul: ${user.balance} so'm\n💳 Karta: ${user.wallet || "Kiritilmagan"}`, {
+            parse_mode: "Markdown",
             reply_markup: {
-                inline_keyboard: [[{ text: "💳 Karta kiritish", callback_data: "set_wallet" }]]
+                inline_keyboard: [[{ text: "💳 Karta raqamni kiritish", callback_data: "set_wallet" }]]
             }
         });
+    } else if (text === "🎁 Kunlik Bonus") {
+        const now = Date.now();
+        const oneDay = 24 * 60 * 60 * 1000; // 24 soat millisekundlarda
+
+        if (now - user.lastBonus >= oneDay) {
+            const reward = 5000; // Bonus miqdori
+            user.balance += reward;
+            user.lastBonus = now;
+            saveDB();
+            bot.sendMessage(chatId, `🎉 Tabriklaymiz! Sizga ${reward} so'm kunlik bonus berildi.`);
+        } else {
+            const nextBonus = new Date(user.lastBonus + oneDay);
+            const timeLeft = Math.ceil((nextBonus - now) / (60 * 60 * 1000));
+            bot.sendMessage(chatId, `⏳ Bonus olib bo'lingan. Keyingi bonusgacha taxminan ${timeLeft} soat qoldi.`);
+        }
     }
 });
 
 function sendQuestion(chatId) {
     const user = users[chatId];
     if (user.questionIndex >= questions.length) {
-        return bot.sendMessage(chatId, "🏁 Barcha savollar tugadi! Yangilarini kuting.");
+        return bot.sendMessage(chatId, "🏁 Barcha savollar tugadi! Tez orada yangilari qo'shiladi.");
     }
 
     const q = questions[user.questionIndex];
+    const options = q.options.map(opt => [{ text: opt, callback_data: `ans_${opt}` }]);
+
     bot.sendMessage(chatId, `❓ ${q.question}`, {
-        reply_markup: {
-            inline_keyboard: q.options.map(opt => [{ text: opt, callback_data: `ans_${opt}` }])
-        }
+        reply_markup: { inline_keyboard: options }
     });
 }
 
@@ -113,12 +141,12 @@ bot.on("callback_query", (query) => {
     const data = query.data;
     const user = users[chatId];
 
-    // Cheksiz yuklanishni to'xtatish (3-tuzatish)
     bot.answerCallbackQuery(query.id);
 
     if (data === "set_wallet") {
         user.waitingWallet = true;
-        bot.sendMessage(chatId, "💳 16 xonali karta raqamingizni yozib yuboring:");
+        saveDB();
+        bot.sendMessage(chatId, "💳 16 xonali plastik karta raqamingizni yuboring:");
     }
 
     if (data.startsWith("ans_")) {
@@ -126,21 +154,23 @@ bot.on("callback_query", (query) => {
         const q = questions[user.questionIndex];
 
         if (answer === q.answer) {
-            user.balance += 20000;
-            bot.sendMessage(chatId, "✅ To'g'ri! +20,000 so'm");
+            user.balance += 10000;
+            bot.sendMessage(chatId, "✅ To'g'ri javob! +10,000 so'm.");
         } else {
-            bot.sendMessage(chatId, "❌ Noto'g'ri!");
+            bot.sendMessage(chatId, "❌ Noto'g'ri javob.");
         }
 
-        user.questionIndex++; // (4-tuzatish: Index nazorati)
+        user.questionIndex++;
         saveDB();
-        bot.deleteMessage(chatId, query.message.message_id);
+        
+        // Xabarni o'chirish (tozalik uchun)
+        bot.deleteMessage(chatId, query.message.message_id).catch(() => {});
         
         // Keyingi savolga o'tish
-        setTimeout(() => sendQuestion(chatId), 1000);
+        setTimeout(() => sendQuestion(chatId), 800);
     }
 });
 
-// Render uchun web server
-app.get('/', (req, res) => res.send('Bot Online'));
+// Render uchun server
+app.get('/', (req, res) => res.send('Bot is running!'));
 app.listen(process.env.PORT || 3000);
