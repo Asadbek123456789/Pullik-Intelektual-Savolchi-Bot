@@ -1,14 +1,19 @@
 const TelegramBot = require('node-telegram-bot-api');
-const fs = require('fs');
 const express = require('express');
+const fs = require('fs');
 
 const token = '8705116857:AAGppWc6OqJIz-zPrYqV0XaUXby8f8vbUVU';
 const MY_ID = 8142538424; 
 const DB_FILE = 'users.json';
 
-// Xabarlar takrorlanishini (3 tadan kelishini) oldini olish uchun
-const bot = new TelegramBot(token, { polling: { params: { drop_pending_updates: true } } });
+// Render'da uyg'oq turishi uchun port
 const app = express();
+const PORT = process.env.PORT || 3000;
+app.get('/', (req, res) => res.send('Bot is Live'));
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+
+// Pollingni takrorlanmaydigan qilib sozlash
+const bot = new TelegramBot(token, { polling: { params: { drop_pending_updates: true } } });
 
 let users = {};
 if (fs.existsSync(DB_FILE)) {
@@ -18,19 +23,17 @@ if (fs.existsSync(DB_FILE)) {
 function saveDB() { fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2)); }
 
 const questions = [
-    { question: "Real Madrid afsonasi Kaka nechanchi yili Oltin to'pni olgan?", options: ["2005", "2007", "2009"], answer: "2007" },
-    { question: "Kaka Real Madridda nechanchi raqamda o'ynagan?", options: ["10", "8", "22"], answer: "8" },
-    { question: "1 kilobayt necha bayt?", options: ["1000", "1024", "512"], answer: "1024" }
+    { question: "Kaka nechanchi yili Oltin to'p olgan?", options: ["2005", "2007", "2009"], answer: "2007" },
+    { question: "Kaka Real Madridda qaysi raqamda o'ynagan?", options: ["10", "8", "22"], answer: "8" }
 ];
 
-function initUser(chatId, username) {
-    if (!users[chatId]) {
-        users[chatId] = { username: username || 'noma'lum', balance: 0, questionIndex: 0, lastBonus: 0, wallet: null, waitingWallet: false };
+function initUser(id, username) {
+    if (!users[id]) {
+        users[id] = { username: username || '', balance: 0, questionIndex: 0, lastBonus: 0, wallet: null, waitingWallet: false };
         saveDB();
     }
 }
 
-// 4 TA TUGMALI MENYU
 function sendMenu(chatId) {
     bot.sendMessage(chatId, "🏠 **Asosiy menyu**", {
         parse_mode: "Markdown",
@@ -63,61 +66,52 @@ bot.on("message", (msg) => {
             saveDB();
             return bot.sendMessage(chatId, "✅ Karta saqlandi!");
         } else {
-            return bot.sendMessage(chatId, "❌ 16 ta raqam yozing!");
+            return bot.sendMessage(chatId, "❌ 16 xonali raqam yozing!");
         }
     }
 
-    if (text === "🧠 Savollarni boshlash") { sendQuestion(chatId); } 
+    if (text === "🧠 Savollarni boshlash") {
+        const q = questions[user.questionIndex];
+        if (!q) return bot.sendMessage(chatId, "🏁 Savollar tugadi.");
+        bot.sendMessage(chatId, `❓ ${q.question}`, {
+            reply_markup: { inline_keyboard: q.options.map(o => [{ text: o, callback_data: `ans_${o}` }]) }
+        });
+    } 
     else if (text === "🎁 Kunlik Bonus") {
         const now = Date.now();
-        if (now - user.lastBonus < 86400000) {
-            return bot.sendMessage(chatId, "⏳ Bonus olingan. Ertaga kiring.");
-        }
+        if (now - user.lastBonus < 86400000) return bot.sendMessage(chatId, "⏳ Ertaga kiring.");
         user.balance += 5000;
         user.lastBonus = now;
         saveDB();
         bot.sendMessage(chatId, "🎉 5,000 so'm bonus berildi!");
     }
     else if (text === "👤 Hisobim") {
-        bot.sendMessage(chatId, `💰 Balans: ${user.balance} so'm\n💳 Karta: ${user.wallet || "Yo'q"}`, {
+        bot.sendMessage(chatId, `💰 Balans: ${user.balance}\n💳 Karta: ${user.wallet || "Yo'q"}`, {
             reply_markup: { inline_keyboard: [[{ text: "💳 Karta kiritish", callback_data: "wallet" }]] }
         });
     }
-    else if (text === "📨 Taklif qilish") {
-        bot.sendMessage(chatId, `📨 Havolangiz: https://t.me/Pullik_Intelektual_Savolchi_Bot?start=${chatId}`);
-    }
 });
-
-function sendQuestion(chatId) {
-    const user = users[chatId];
-    if (user.questionIndex >= questions.length) return bot.sendMessage(chatId, "🏁 Savollar tugadi.");
-    const q = questions[user.questionIndex];
-    bot.sendMessage(chatId, `❓ ${q.question}`, {
-        reply_markup: { inline_keyboard: q.options.map(o => [{ text: o, callback_data: `ans_${o}` }]) }
-    });
-}
 
 bot.on("callback_query", (q) => {
     const chatId = q.message.chat.id;
-    bot.answerCallbackQuery(q.id);
     const user = users[chatId];
+    bot.answerCallbackQuery(q.id);
+
     if (q.data === "wallet") {
         user.waitingWallet = true;
         saveDB();
-        bot.sendMessage(chatId, "💳 Kartani yuboring:");
+        bot.sendMessage(chatId, "💳 Kartangizni yuboring:");
     }
     if (q.data.startsWith("ans_")) {
         const choice = q.data.replace("ans_", "");
         if (choice === questions[user.questionIndex].answer) {
             user.balance += 10000;
             bot.sendMessage(chatId, "✅ To'g'ri!");
-        } else { bot.sendMessage(chatId, "❌ Noto'g'ri!"); }
+        }
         user.questionIndex++;
         saveDB();
         bot.deleteMessage(chatId, q.message.message_id).catch(()=>{});
-        setTimeout(() => sendQuestion(chatId), 500);
+        // Keyingi savol uchun start buyrug'i kabi mantiq
+        bot.sendMessage(chatId, "Keyingi savol uchun yana 'Savollarni boshlash'ni bosing yoki menyudan foydalaning.");
     }
 });
-
-app.get('/', (req, res) => res.send('Bot Active'));
-app.listen(process.env.PORT || 3000);
